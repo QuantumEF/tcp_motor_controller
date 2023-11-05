@@ -58,9 +58,7 @@ fn main() -> ! {
         .in_pin_base(encoder_pin1_id)
         .clock_divisor_fixed_point(16, 0)
         .autopull(false)
-        .pull_threshold(32)
         .autopush(false)
-        .push_threshold(32)
         .build(sm0);
     // The GPIO pin needs to be configured as an output.
     sm.set_pindirs([
