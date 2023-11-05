@@ -53,6 +53,7 @@ fn main() -> ! {
     let installed = pio.install(&program.program).unwrap();
     let (mut sm, mut rx, _) = rp2040_hal::pio::PIOBuilder::from_program(installed)
         .in_shift_direction(hal::pio::ShiftDirection::Left)
+        .out_shift_direction(hal::pio::ShiftDirection::Right)
         .jmp_pin(encoder_pin1_id)
         .in_pin_base(encoder_pin1_id)
         .clock_divisor_fixed_point(16, 0)
