@@ -13,6 +13,7 @@ use hal::sio::Sio;
 use hal::uart::{DataBits, StopBits, UartConfig};
 use heapless::String;
 use panic_halt as _;
+use pid::Pid;
 use rp2040_hal as hal;
 use rp2040_hal::clocks::Clock;
 
@@ -94,6 +95,10 @@ fn main() -> ! {
         )
         .unwrap();
 
+    const PID_LIMIT: f32 = 13.0;
+    let mut pid_controller: Pid<f32> = Pid::new(0.0, PID_LIMIT);
+    pid_controller.p(0.1, PID_LIMIT);
+
     let mut pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
 
     let motor_pwm = &mut pwm_slices.pwm1;
@@ -112,34 +117,38 @@ fn main() -> ! {
     channel_rev.set_duty(0);
 
     loop {
-        // let value = rx.read().unwrap() as i32;
-        let mut value = 0;
+        let mut encoder_measurement = 0;
         while let Some(encoder_value) = rx.read() {
-            value = encoder_value as i32;
+            encoder_measurement = encoder_value as i32;
         }
-        writeln!(uart, "value: {value}\r").unwrap();
-        delay.delay_ms(100);
+        // writeln!(uart, "value: {encoder_measurement}\r").unwrap();
+        // delay.delay_ms(100);
 
         if uart.uart_is_readable() {
+            delay.delay_us(500);
             let mut uart_string: String<8> = String::new();
             while let Ok(uart_data) = uart.read() {
                 if (uart_data as char) == '\n' {
+                    writeln!(uart, "Got {uart_string}").unwrap();
                     break;
                 }
                 if uart_string.push(uart_data as char).is_err() {
                     break;
                 }
             }
-            if let Ok(input_speed) = uart_string.parse::<i8>() {
-                if let Some((speed_fwd, speed_rev)) = calculate_hbridge(input_speed) {
-                    channel_fwd.set_duty(speed_fwd);
-                    channel_rev.set_duty(speed_rev);
-                } else {
-                    writeln!(uart, "Invalid Speed").unwrap();
-                }
+            if let Ok(setpoint) = uart_string.parse::<i32>() {
+                pid_controller.setpoint(setpoint as f32);
             } else {
                 writeln!(uart, "Invalid number").unwrap();
             }
+        }
+
+        let controller_output = pid_controller.next_control_output(encoder_measurement as f32);
+        if let Some((speed_fwd, speed_rev)) = calculate_hbridge(controller_output.output as i8) {
+            channel_fwd.set_duty(speed_rev);
+            channel_rev.set_duty(speed_fwd);
+        } else {
+            writeln!(uart, "Invalid Speed").unwrap();
         }
     }
 }
