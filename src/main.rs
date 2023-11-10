@@ -1,26 +1,22 @@
-//! This example shows how to read from and write to PIO using DMA.
-//!
-//! If a LED is connected to that pin, like on a Pico board, it will continously output "HELLO
-//! WORLD" in morse code. The example also tries to read the data back. If reading the data fails,
-//! the message will only be shown once, and then the LED remains dark.
-//!
-//! See the `Cargo.toml` file for Copyright and licence details.
 #![no_std]
 #![no_main]
 
 use core::fmt::Write;
+use cortex_m::prelude::_embedded_hal_PwmPin;
 use cortex_m_rt::entry;
+use embedded_hal::serial::Read;
 use fugit::RateExtU32;
 use hal::gpio::{FunctionPio0, Pin};
 use hal::pac;
 use hal::pio::PIOExt;
 use hal::sio::Sio;
+use hal::uart::{DataBits, StopBits, UartConfig};
+use heapless::String;
 use panic_halt as _;
 use rp2040_hal as hal;
 use rp2040_hal::clocks::Clock;
 
-// UART related types
-use hal::uart::{DataBits, StopBits, UartConfig};
+const MOTOR_PWM_DIV: u8 = 64;
 
 const XTAL_FREQ_HZ: u32 = 12_000_000u32;
 
@@ -40,30 +36,28 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    let encoder_pin1: Pin<_, FunctionPio0, _> = pins.gpio16.into_function();
+    let encoder_pin0: Pin<_, FunctionPio0, _> = pins.gpio16.into_function();
     // PIN id for use inside of PIO
-    let encoder_pin1_id = encoder_pin1.id().num;
+    let encoder_pin0_id = encoder_pin0.id().num;
 
-    // Define a PIO program which reads data from the TX FIFO bit by bit, configures the LED
-    // according to the data, and then writes the data back to the RX FIFO.
-    let program = pio_proc::pio_file!("src/quadrature_encoder.pio");
+    let encoder_program = pio_proc::pio_file!("src/quadrature_encoder.pio");
 
     // Initialize and start PIO
     let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
-    let installed = pio.install(&program.program).unwrap();
+    let installed = pio.install(&encoder_program.program).unwrap();
     let (mut sm, mut rx, _) = rp2040_hal::pio::PIOBuilder::from_program(installed)
         .in_shift_direction(hal::pio::ShiftDirection::Left)
         .out_shift_direction(hal::pio::ShiftDirection::Right)
-        .jmp_pin(encoder_pin1_id)
-        .in_pin_base(encoder_pin1_id)
+        .jmp_pin(encoder_pin0_id)
+        .in_pin_base(encoder_pin0_id)
         .clock_divisor_fixed_point(16, 0)
         .autopull(false)
         .autopush(false)
         .build(sm0);
-    // The GPIO pin needs to be configured as an output.
+
     sm.set_pindirs([
-        (encoder_pin1_id, hal::pio::PinDir::Input),
-        (encoder_pin1_id + 1, hal::pio::PinDir::Input),
+        (encoder_pin0_id, hal::pio::PinDir::Input),
+        (encoder_pin0_id + 1, hal::pio::PinDir::Input),
     ]);
 
     sm.start();
@@ -100,8 +94,22 @@ fn main() -> ! {
         )
         .unwrap();
 
-    uart.write_full_blocking(b"UART example\r\n");
-    writeln!(uart, "Debug {encoder_pin1_id}").unwrap();
+    let mut pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
+
+    let motor_pwm = &mut pwm_slices.pwm1;
+    // let pwm_rev = &mut pwm_slices.pwm1;
+    motor_pwm.set_ph_correct();
+    motor_pwm.set_div_int(MOTOR_PWM_DIV);
+    motor_pwm.set_top(65000);
+    motor_pwm.enable();
+
+    let channel_fwd = &mut motor_pwm.channel_a;
+    let channel_rev = &mut motor_pwm.channel_b;
+    channel_fwd.output_to(pins.gpio18);
+    channel_rev.output_to(pins.gpio19);
+
+    channel_fwd.set_duty(0);
+    channel_rev.set_duty(0);
 
     loop {
         // let value = rx.read().unwrap() as i32;
@@ -111,5 +119,38 @@ fn main() -> ! {
         }
         writeln!(uart, "value: {value}\r").unwrap();
         delay.delay_ms(100);
+
+        if uart.uart_is_readable() {
+            let mut uart_string: String<8> = String::new();
+            while let Ok(uart_data) = uart.read() {
+                if (uart_data as char) == '\n' {
+                    break;
+                }
+                if uart_string.push(uart_data as char).is_err() {
+                    break;
+                }
+            }
+            if let Ok(input_speed) = uart_string.parse::<i8>() {
+                if let Some((speed_fwd, speed_rev)) = calculate_hbridge(input_speed) {
+                    channel_fwd.set_duty(speed_fwd);
+                    channel_rev.set_duty(speed_rev);
+                } else {
+                    writeln!(uart, "Invalid Speed").unwrap();
+                }
+            } else {
+                writeln!(uart, "Invalid number").unwrap();
+            }
+        }
+    }
+}
+
+fn calculate_hbridge(speed: i8) -> Option<(u16, u16)> {
+    const SPEED_MULTIPLIER: u16 = 5000;
+    let converted_speed = speed.unsigned_abs() as u16;
+    match speed {
+        0 => Some((0, 0)),
+        1..=13 => Some((converted_speed * SPEED_MULTIPLIER, 0)),
+        -13..=-1 => Some((0, converted_speed * SPEED_MULTIPLIER)),
+        _ => None,
     }
 }

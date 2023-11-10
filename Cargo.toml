@@ -26,6 +26,8 @@ panic-halt = "0.2.0"
 
 fugit = "0.3.6"
 
+heapless = "0.7.16"
+
 # cargo build/run
 [profile.dev]
 codegen-units = 1
