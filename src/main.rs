@@ -97,7 +97,7 @@ fn main() -> ! {
 
     const PID_LIMIT: f32 = 13.0;
     let mut pid_controller: Pid<f32> = Pid::new(0.0, PID_LIMIT);
-    pid_controller.p(0.1, PID_LIMIT);
+    pid_controller.p(0.01, PID_LIMIT);
 
     let mut pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
 
@@ -116,11 +116,13 @@ fn main() -> ! {
     channel_fwd.set_duty(0);
     channel_rev.set_duty(0);
 
+    let mut value = 0;
+
     loop {
-        let mut encoder_measurement = 0;
-        while let Some(encoder_value) = rx.read() {
-            encoder_measurement = encoder_value as i32;
-        }
+        // let mut encoder_measurement = 0;
+        // while let Some(encoder_value) = rx.read() {
+        //     encoder_measurement = encoder_value as i32;
+        // }
         // writeln!(uart, "value: {encoder_measurement}\r").unwrap();
         // delay.delay_ms(100);
 
@@ -136,14 +138,14 @@ fn main() -> ! {
                     break;
                 }
             }
-            if let Ok(setpoint) = uart_string.parse::<i32>() {
-                pid_controller.setpoint(setpoint as f32);
+            if let Ok(uart_data) = uart_string.parse::<i32>() {
+                value = uart_data;
             } else {
                 writeln!(uart, "Invalid number").unwrap();
             }
         }
 
-        let controller_output = pid_controller.next_control_output(encoder_measurement as f32);
+        let controller_output = pid_controller.next_control_output(value as f32);
         if let Some((speed_fwd, speed_rev)) = calculate_hbridge(controller_output.output as i8) {
             channel_fwd.set_duty(speed_rev);
             channel_rev.set_duty(speed_fwd);
