@@ -102,19 +102,12 @@ fn main() -> ! {
     let mut pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
 
     let motor_pwm = &mut pwm_slices.pwm1;
-    // let pwm_rev = &mut pwm_slices.pwm1;
     motor_pwm.set_ph_correct();
     motor_pwm.set_div_int(MOTOR_PWM_DIV);
-    motor_pwm.set_top(65000);
     motor_pwm.enable();
 
-    let channel_fwd = &mut motor_pwm.channel_a;
-    let channel_rev = &mut motor_pwm.channel_b;
-    channel_fwd.output_to(pins.gpio18);
-    channel_rev.output_to(pins.gpio19);
-
-    channel_fwd.set_duty(0);
-    channel_rev.set_duty(0);
+    let mut motor_ctl = hbridge::HBridge::new(motor_pwm);
+    motor_ctl.set_output_pins(pins.gpio18, pins.gpio19);
 
     let mut value = 0;
 
@@ -144,24 +137,85 @@ fn main() -> ! {
                 writeln!(uart, "Invalid number").unwrap();
             }
         }
+        motor_ctl.set_speed(value);
+        // let controller_output = pid_controller.next_control_output(value as f32);
+    }
+}
 
-        let controller_output = pid_controller.next_control_output(value as f32);
-        if let Some((speed_fwd, speed_rev)) = calculate_hbridge(controller_output.output as i8) {
-            channel_fwd.set_duty(speed_rev);
-            channel_rev.set_duty(speed_fwd);
-        } else {
-            writeln!(uart, "Invalid Speed").unwrap();
+mod hbridge {
+    use core::cmp::Ordering;
+
+    use embedded_hal::PwmPin;
+    use hal::gpio::AnyPin;
+    use hal::pwm;
+    use hal::pwm::{Slice, SliceId, ValidPwmOutputPin, ValidSliceMode};
+    use rp2040_hal as hal;
+
+    pub struct HBridge<'a, I: SliceId, M: ValidSliceMode<I>> {
+        pwm_slice: &'a mut Slice<I, M>,
+        speed: i32,
+    }
+
+    impl<'a, I: SliceId, M: ValidSliceMode<I>> HBridge<'a, I, M> {
+        pub fn new(pwm_slice: &'a mut Slice<I, M>) -> HBridge<'a, I, M> {
+            HBridge {
+                pwm_slice,
+                speed: 0,
+            }
+        }
+
+        pub fn set_output_pins<F: AnyPin, B: AnyPin>(
+            &mut self,
+            forward_pin: F,
+            reverse_pin: B,
+        ) -> &Self
+        where
+            <B as AnyPin>::Id: ValidPwmOutputPin<I, pwm::B>,
+            <F as AnyPin>::Id: ValidPwmOutputPin<I, pwm::A>,
+        {
+            let _ = &self.pwm_slice.channel_a.output_to(forward_pin);
+            let _ = &self.pwm_slice.channel_b.output_to(reverse_pin);
+            self
+        }
+
+        pub fn set_speed(&mut self, speed: i32) -> &Self {
+            self.speed = speed;
+            match speed.cmp(&0) {
+                Ordering::Greater => {
+                    let _ = &self.pwm_slice.channel_a.set_duty(speed as u16);
+                    let _ = &self.pwm_slice.channel_b.set_duty(0);
+                }
+                Ordering::Less => {
+                    let _ = &self
+                        .pwm_slice
+                        .channel_b
+                        .set_duty(speed.unsigned_abs() as u16);
+                    let _ = &self.pwm_slice.channel_a.set_duty(0);
+                }
+                Ordering::Equal => {
+                    let _ = &self.pwm_slice.channel_a.set_duty(0);
+                    let _ = &self.pwm_slice.channel_b.set_duty(0);
+                }
+            }
+            self
         }
     }
 }
 
-fn calculate_hbridge(speed: i8) -> Option<(u16, u16)> {
-    const SPEED_MULTIPLIER: u16 = 5000;
-    let converted_speed = speed.unsigned_abs() as u16;
-    match speed {
-        0 => Some((0, 0)),
-        1..=13 => Some((converted_speed * SPEED_MULTIPLIER, 0)),
-        -13..=-1 => Some((0, converted_speed * SPEED_MULTIPLIER)),
-        _ => None,
-    }
-}
+// fn hbridge_setup<I: SliceId, M: ValidSliceMode<I>>(pwm_slice: &mut Slice<I, M>) {
+//     pwm_slice.set_ph_correct();
+//     pwm_slice.set_div_int(MOTOR_PWM_DIV);
+//     pwm_slice.set_top(65000);
+//     pwm_slice.enable();
+// }
+
+// fn calculate_hbridge(speed: i8) -> Option<(u16, u16)> {
+//     const SPEED_MULTIPLIER: u16 = 5000;
+//     let converted_speed = speed.unsigned_abs() as u16;
+//     match speed {
+//         0 => Some((0, 0)),
+//         1..=13 => Some((converted_speed * SPEED_MULTIPLIER, 0)),
+//         -13..=-1 => Some((0, converted_speed * SPEED_MULTIPLIER)),
+//         _ => None,
+//     }
+// }
